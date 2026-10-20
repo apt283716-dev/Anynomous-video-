@@ -27,6 +27,7 @@ import {
   Activity,
   FileSpreadsheet,
   Clock,
+  Waves,
 } from 'lucide-react';
 import {
   CallToken,
@@ -36,6 +37,10 @@ import {
 } from '../utils/cryptoCallLogic';
 import { signalingService, SignalMessage } from '../services/signalingService';
 import { getSafeUserMedia, createSyntheticStream, createCompositeRecorder } from '../utils/mediaStreamUtils';
+import {
+  createNoiseSuppressionPipeline,
+  AudioPipelineResult,
+} from '../utils/audioProcessor';
 import { SavedRecording } from './RecordingVaultModal';
 
 interface VideoCallRoomProps {
@@ -78,6 +83,10 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
   // Snapshot State
   const [isShutterFlashing, setIsShutterFlashing] = useState(false);
 
+  // Client-Side Web Audio Noise Suppression State (GainNode + DynamicsCompressorNode)
+  const [isNoiseSuppressionEnabled, setIsNoiseSuppressionEnabled] = useState(true);
+  const audioPipelineRef = useRef<AudioPipelineResult | null>(null);
+
   // Stealth Decoy / Camouflage Mode
   const [isCamouflageActive, setIsCamouflageActive] = useState(false);
 
@@ -99,11 +108,22 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
       try {
         const { stream, isVirtual } = await getSafeUserMedia(isVirtualCam);
         if (!isMounted) return;
-        setLocalStream(stream);
+
+        // Clean up previous pipeline if any
+        if (audioPipelineRef.current) {
+          audioPipelineRef.current.cleanup();
+        }
+
+        // Initialize Web Audio noise suppression graph
+        const pipeline = createNoiseSuppressionPipeline(stream, isNoiseSuppressionEnabled);
+        audioPipelineRef.current = pipeline;
+
+        const effectiveStream = pipeline.processedStream || stream;
+        setLocalStream(effectiveStream);
         setIsVirtualCam(isVirtual);
 
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.srcObject = effectiveStream;
         }
 
         // If simulated peer mode or guest is joined, create remote stream
@@ -158,6 +178,9 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
     return () => {
       isMounted = false;
       unsubscribe();
+      if (audioPipelineRef.current) {
+        audioPipelineRef.current.cleanup();
+      }
     };
   }, [token.id, role, isSimulatedPeer, isVirtualCam]);
 
@@ -211,6 +234,27 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
       });
       setIsVideoMuted((prev) => !prev);
     }
+  };
+
+  // Toggle Microphone Noise Suppression (Web Audio DynamicsCompressorNode & GainNode)
+  const toggleNoiseSuppression = () => {
+    const next = !isNoiseSuppressionEnabled;
+    setIsNoiseSuppressionEnabled(next);
+
+    if (audioPipelineRef.current) {
+      audioPipelineRef.current.setEnabled(next);
+    }
+
+    if (next) {
+      setStealthNotification(
+        '🎙️ NOISE SUPPRESSION ACTIVE: DynamicsCompressorNode (-24dB, 12:1) & GainNode engaged.'
+      );
+    } else {
+      setStealthNotification(
+        '🎙️ NOISE SUPPRESSION BYPASSED: Raw unprocessed microphone audio.'
+      );
+    }
+    setTimeout(() => setStealthNotification(null), 3500);
   };
 
   // Start Private Recording (Stealth - Client-Side Only)
@@ -463,6 +507,10 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
       remoteStream.getTracks().forEach((track) => track.stop());
     }
 
+    if (audioPipelineRef.current) {
+      audioPipelineRef.current.cleanup();
+    }
+
     // Burn token across network
     signalingService.burnToken(token.id, 'CALL_TERMINATED');
 
@@ -566,6 +614,11 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
             <span>Verify E2EE SAS: {token.shortAuthString}</span>
           </button>
+
+          <div className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs font-mono text-slate-300 shadow-lg">
+            <Waves className={`w-3.5 h-3.5 ${isNoiseSuppressionEnabled ? 'text-cyan-400 animate-pulse' : 'text-slate-600'}`} />
+            <span>Audio DSP: {isNoiseSuppressionEnabled ? 'Compressor Active' : 'Bypass'}</span>
+          </div>
         </div>
 
         {/* Private Local-Only Recording Badge (Exclusive to Host / Caller side) */}
@@ -717,6 +770,33 @@ export const VideoCallRoom: React.FC<VideoCallRoomProps> = ({
           >
             <Camera className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Virtual HD Cam</span>
+          </button>
+
+          {/* Client-Side Microphone Noise Suppression Toggle Button */}
+          <button
+            type="button"
+            onClick={toggleNoiseSuppression}
+            data-testid="noise-suppression-toggle"
+            aria-pressed={isNoiseSuppressionEnabled}
+            className={`px-3 py-2.5 rounded-xl border font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
+              isNoiseSuppressionEnabled
+                ? 'bg-cyan-950/80 border-cyan-500/70 text-cyan-300 shadow-sm shadow-cyan-950/50'
+                : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800'
+            }`}
+            title="Real-time Web Audio API Noise Suppression (DynamicsCompressorNode + GainNode)"
+            aria-label="Toggle microphone noise suppression"
+          >
+            <Waves className={`w-3.5 h-3.5 ${isNoiseSuppressionEnabled ? 'text-cyan-400 animate-pulse' : 'text-slate-500'}`} />
+            <span className="hidden md:inline">Noise Filter</span>
+            <span
+              className={`text-[9px] px-1.5 py-0.2 rounded font-sans font-bold uppercase tracking-wider ${
+                isNoiseSuppressionEnabled
+                  ? 'bg-cyan-900/90 text-cyan-200 border border-cyan-500/40'
+                  : 'bg-slate-800 text-slate-500'
+              }`}
+            >
+              {isNoiseSuppressionEnabled ? 'ON' : 'OFF'}
+            </span>
           </button>
         </div>
 
