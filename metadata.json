@@ -1,0 +1,6 @@
+{
+  "name": "CipherCall - Ephemeral One-Time E2EE Video Calls",
+  "description": "Ultra-secure, one-time ephemeral video calling with phone-linked one-time access tokens, client-side only private recording, and 3D cryptographic visualization.",
+  "requestFramePermissions": ["camera", "microphone", "display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
